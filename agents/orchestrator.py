@@ -9,9 +9,10 @@ from typing import Literal, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from agents.state import ValidationState, ABTestContext
+from agents.state import ValidationState, ABTestContext, CodeValidationContext
 from agents.a2a_protocol import A2AProtocolHandler, MessageStatus
 from agents.data_validation_agent import DataValidationAgent
+from agents.code_validation_agent import CodeValidationAgent
 
 
 class OrchestratingAgent:
@@ -40,6 +41,7 @@ class OrchestratingAgent:
 
         # Initialize sub-agents
         self.data_validation_agent = DataValidationAgent(model=model, temperature=temperature)
+        self.code_validation_agent = CodeValidationAgent(model=model, temperature=temperature)
 
         self.graph = self._build_graph()
 
@@ -80,18 +82,40 @@ class OrchestratingAgent:
         A/B testing validation tasks. Analyze the incoming task and determine the validation strategy.
 
         You will coordinate sub-agents:
-        - Data Validation Agent: Validates dataset quality, relevance, and statistical adequacy
+        - Data Validation Agent: Validates dataset quality, relevance, and statistical adequacy for A/B tests
+        - Code Validation Agent: Validates Python code for syntax, best practices, functionality, and readability
         - Additional validation agents as needed
 
         Provide a brief analysis of what needs to be validated."""
 
         context_info = ""
+        ab_context = state.get("ab_test_context")
+        code_context = state.get("code_validation_context")
+
         if ab_context:
-            context_info = f"""
+            context_info += f"""
 A/B Test Context:
 - Hypothesis: {ab_context.get('hypothesis', 'Not specified')}
 - Success Metrics: {ab_context.get('success_metrics', [])}
 - Dataset Path: {ab_context.get('dataset_path', 'Not specified')}
+"""
+        if code_context:
+            code_path = code_context.get('code_path', '')
+            code_snippet = code_context.get('code', '')
+
+            if code_path:
+                context_info += f"""
+Code Validation Context:
+- Code File: {code_path}
+- Description: {code_context.get('description', 'Not specified')}
+"""
+            elif code_snippet:
+                code_preview = code_snippet[:200] + "..." if len(code_snippet) > 200 else code_snippet
+                context_info += f"""
+Code Validation Context:
+- Code Length: {len(code_snippet)} characters
+- Description: {code_context.get('description', 'Not specified')}
+- Code Preview: {code_preview}
 """
 
         messages = [
@@ -122,6 +146,7 @@ A/B Test Context:
             state["a2a_messages"] = []
 
         ab_context = state.get("ab_test_context")
+        code_context = state.get("code_validation_context")
 
         # Delegate to Data Validation Agent using A2A protocol
         if ab_context:
@@ -152,11 +177,38 @@ A/B Test Context:
             # Extract result
             state["data_validation_result"] = data_validation_response.result
         else:
-            state["data_validation_result"] = {
-                "error": "No A/B test context provided"
-            }
+            state["data_validation_result"] = None
 
-        # Placeholder for second sub-agent (to be implemented)
+        # Delegate to Code Validation Agent using A2A protocol
+        if code_context:
+            # Create A2A request for code validation
+            code_validation_request = self.a2a_handler.create_request(
+                receiver="code_validation_agent",
+                task="Validate Python code for quality and correctness",
+                data={
+                    "code_path": code_context.get("code_path", ""),
+                    "code": code_context.get("code", ""),
+                    "description": code_context.get("description", ""),
+                    "expected_behavior": code_context.get("expected_behavior", "")
+                },
+                metadata={"orchestrator_step": "delegation"}
+            )
+
+            # Store request
+            state["a2a_messages"].append(self.a2a_handler.serialize_message(code_validation_request))
+
+            # Process request with code validation agent
+            code_validation_response = self.code_validation_agent.process_request(code_validation_request)
+
+            # Store response
+            state["a2a_messages"].append(self.a2a_handler.serialize_message(code_validation_response))
+
+            # Extract result
+            state["code_validation_result"] = code_validation_response.result
+        else:
+            state["code_validation_result"] = None
+
+        # Placeholder for additional sub-agent (to be implemented)
         state["sub_agent_2_result"] = {
             "agent": "sub_agent_2",
             "status": "pending",
@@ -177,20 +229,31 @@ A/B Test Context:
         print("[ORCHESTRATOR] Synthesizing results...")
 
         # Gather sub-agent results
-        data_validation = state.get("data_validation_result", {})
+        data_validation = state.get("data_validation_result")
+        code_validation = state.get("code_validation_result")
         sub_agent_2 = state.get("sub_agent_2_result", {})
 
-        # Format data validation results for synthesis
-        data_val_summary = self._format_data_validation_summary(data_validation)
+        # Build synthesis prompt based on which agents were used
+        results_summary = ""
+
+        if data_validation:
+            data_val_summary = self._format_data_validation_summary(data_validation)
+            results_summary += f"\nData Validation Agent Results:\n{data_val_summary}\n"
+
+        if code_validation:
+            code_val_summary = self._format_code_validation_summary(code_validation)
+            results_summary += f"\nCode Validation Agent Results:\n{code_val_summary}\n"
+
+        if not data_validation and not code_validation:
+            results_summary = "No validation results available."
 
         # Use LLM to synthesize results
         synthesis_prompt = f"""Based on the validation results from sub-agents,
-        provide a final validation decision for the A/B testing setup.
+        provide a final validation decision.
 
         Task: {state['task']}
 
-        Data Validation Agent Results:
-        {data_val_summary}
+        {results_summary}
 
         Additional Agent Results:
         {sub_agent_2.get('message', 'Pending')}
@@ -198,7 +261,7 @@ A/B Test Context:
         Provide:
         1. Overall validation decision (PASS/FAIL)
         2. Brief summary of key findings
-        3. Critical recommendations for the A/B test
+        3. Critical recommendations
 
         Format your response as:
         DECISION: [PASS/FAIL]
@@ -243,13 +306,44 @@ A/B Test Context:
 
         return summary
 
-    def validate(self, task: str, ab_test_context: Optional[ABTestContext] = None) -> dict:
+    def _format_code_validation_summary(self, result: dict) -> str:
+        """Format code validation results for synthesis."""
+        if not result or "error" in result:
+            return f"Error: {result.get('error', 'Unknown error')}"
+
+        overall_status = result.get("overall_status", "unknown")
+        overall_score = result.get("overall_score", 0)
+
+        summary = f"Overall Status: {overall_status.upper()}\n"
+        summary += f"Overall Score: {overall_score}/10\n\n"
+
+        summary += f"Scores:\n"
+        summary += f"  - Syntax: {result.get('syntax_score', 0)}/10\n"
+        summary += f"  - Best Practices: {result.get('best_practices_score', 0)}/10\n"
+        summary += f"  - Functionality: {result.get('functionality_score', 0)}/10\n"
+        summary += f"  - Readability: {result.get('readability_score', 0)}/10\n\n"
+
+        feedback = result.get("feedback", {})
+        if feedback:
+            summary += "Feedback:\n"
+            for category, fb in feedback.items():
+                summary += f"  - {category.title()}: {fb[:150]}...\n"
+
+        return summary
+
+    def validate(
+        self,
+        task: str,
+        ab_test_context: Optional[ABTestContext] = None,
+        code_validation_context: Optional[CodeValidationContext] = None
+    ) -> dict:
         """
         Execute the validation workflow for a given task.
 
         Args:
             task: The task or content to validate
             ab_test_context: Optional A/B testing context with hypothesis, metrics, and dataset
+            code_validation_context: Optional Python code validation context
 
         Returns:
             Dictionary containing validation results
@@ -258,9 +352,11 @@ A/B Test Context:
         initial_state = ValidationState(
             task=task,
             ab_test_context=ab_test_context,
+            code_validation_context=code_validation_context,
             messages=[],
             a2a_messages=[],
             data_validation_result=None,
+            code_validation_result=None,
             sub_agent_2_result=None,
             current_step="start",
             next_action="entry",
@@ -277,7 +373,8 @@ A/B Test Context:
             "task": task,
             "validation_passed": final_state["validation_passed"],
             "summary": final_state["validation_summary"],
-            "data_validation": final_state["data_validation_result"],
+            "data_validation": final_state.get("data_validation_result"),
+            "code_validation": final_state.get("code_validation_result"),
             "sub_agent_2": final_state["sub_agent_2_result"],
             "a2a_messages": final_state["a2a_messages"]
         }

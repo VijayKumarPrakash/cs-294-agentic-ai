@@ -17,6 +17,16 @@ class ABTestContext(TypedDict):
     power: Optional[float]  # Statistical power (default: 0.8)
 
 
+class CodeValidationContext(TypedDict):
+    """
+    Context information for Python code validation.
+    """
+    code_path: Optional[str]  # Path to the Python file to validate
+    code: Optional[str]  # The Python code to validate (if not using code_path)
+    description: Optional[str]  # Description of what the code should do
+    expected_behavior: Optional[str]  # Expected behavior or output
+
+
 class ValidationState(TypedDict):
     """
     State schema for the validation workflow.
@@ -30,6 +40,9 @@ class ValidationState(TypedDict):
     # A/B Testing specific context
     ab_test_context: Optional[ABTestContext]  # A/B test validation context
 
+    # Code validation specific context
+    code_validation_context: Optional["CodeValidationContext"]  # Python code validation context
+
     # Message history for LLM interactions
     messages: Annotated[List[BaseMessage], add_messages]
 
@@ -38,6 +51,7 @@ class ValidationState(TypedDict):
 
     # Sub-agent results
     data_validation_result: Optional[dict]  # Results from data validation agent
+    code_validation_result: Optional[dict]  # Results from code validation agent
     sub_agent_2_result: Optional[dict]  # Results from second validation agent
 
     # Orchestrator decisions

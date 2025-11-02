@@ -8,7 +8,7 @@ to coordinate validation tasks using sub-agents via A2A protocol.
 import os
 from dotenv import load_dotenv
 from agents.orchestrator import OrchestratingAgent
-from agents.state import ABTestContext
+from agents.state import ABTestContext, CodeValidationContext
 
 
 def main():
@@ -85,6 +85,58 @@ def main():
 
         if data_val.get('checks_failed'):
             print(f"\nFailed Checks: {', '.join(data_val['checks_failed'])}")
+
+    print("\n" + "=" * 70)
+
+    # Code Validation
+    print("\n\n")
+    print("=" * 70)
+    print("Python Code Validation")
+    print("=" * 70)
+    print()
+
+    code_validation_context = CodeValidationContext(
+        code_path="datasource/sample_python_files/syntax_errors_ab_test.py",
+        code=None,
+        description="A/B testing implementation with statistical tests",
+        expected_behavior="Should perform t-tests and chi-square tests on A/B test data"
+    )
+
+    code_task = "Validate the Python code quality for the A/B testing implementation"
+
+    print(f"Task: {code_task}")
+    print(f"File: datasource/sample_python_files/syntax_errors_ab_test.py\n")
+    print("=" * 70)
+    print()
+
+    # Execute code validation
+    code_result = orchestrator.validate(code_task, code_validation_context=code_validation_context)
+
+    # Display results
+    print("=" * 70)
+    print("FINAL CODE VALIDATION RESULTS")
+    print("=" * 70)
+    print(f"\nValidation Status: {'✓ PASSED' if code_result['validation_passed'] else '✗ FAILED'}")
+    print(f"\nSummary:\n{code_result['summary']}")
+
+    # Show code validation details
+    if code_result.get('code_validation'):
+        print("\n" + "=" * 70)
+        print("CODE VALIDATION DETAILS")
+        print("=" * 70)
+        code_val = code_result['code_validation']
+        print(f"\nOverall Status: {code_val.get('overall_status', 'unknown').upper()}")
+        print(f"Overall Score: {code_val.get('overall_score', 0)}/10")
+        print(f"\nIndividual Scores:")
+        print(f"  - Syntax:         {code_val.get('syntax_score', 0)}/10")
+        print(f"  - Best Practices: {code_val.get('best_practices_score', 0)}/10")
+        print(f"  - Functionality:  {code_val.get('functionality_score', 0)}/10")
+        print(f"  - Readability:    {code_val.get('readability_score', 0)}/10")
+
+        if code_val.get('checks_passed'):
+            print(f"\nChecks Passed: {', '.join(code_val['checks_passed'])}")
+        if code_val.get('checks_failed'):
+            print(f"Checks Failed: {', '.join(code_val['checks_failed'])}")
 
     print("\n" + "=" * 70)
 

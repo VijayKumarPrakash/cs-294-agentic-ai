@@ -9,11 +9,12 @@ from typing import Literal, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from agents.state import ValidationState, ABTestContext, CodeValidationContext, ReportValidationContext
+from agents.state import ValidationState, ABTestContext, CodeValidationContext, ReportValidationContext, StatisticalValidationContext
 from agents.a2a_protocol import A2AProtocolHandler, MessageStatus
 from agents.data_validation_agent import DataValidationAgent
 from agents.code_validation_agent import CodeValidationAgent
 from agents.report_validation_agent import ReportValidationAgent
+from agents.statistical_validation_agent import StatisticalValidationAgent
 
 
 class OrchestratingAgent:
@@ -44,6 +45,7 @@ class OrchestratingAgent:
         self.data_validation_agent = DataValidationAgent(model=model, temperature=temperature)
         self.code_validation_agent = CodeValidationAgent(model=model, temperature=temperature)
         self.report_validation_agent = ReportValidationAgent(model=model, temperature=temperature)
+        self.statistical_validation_agent = StatisticalValidationAgent(model=model, temperature=temperature)
 
         self.graph = self._build_graph()
 
@@ -87,6 +89,7 @@ class OrchestratingAgent:
         - Data Validation Agent: Validates dataset quality, relevance, and statistical adequacy for A/B tests
         - Code Validation Agent: Validates Python code for syntax, best practices, functionality, and readability
         - Report Validation Agent: Validates A/B testing reports for quality, completeness, and validity
+        - Statistical Validation Agent: Validates statistical tests, assumptions, power analysis, effect sizes, and p-values
         - Additional validation agents as needed
 
         Provide a brief analysis of what needs to be validated."""
@@ -95,6 +98,7 @@ class OrchestratingAgent:
         ab_context = state.get("ab_test_context")
         code_context = state.get("code_validation_context")
         report_context = state.get("report_validation_context")
+        statistical_context = state.get("statistical_validation_context")
 
         if ab_context:
             context_info += f"""
@@ -138,6 +142,25 @@ Report Validation Context:
 - Report Length: {len(report_content)} characters
 - Report Type: {report_context.get('report_type', 'ab_test')}
 - Report Preview: {report_preview}
+"""
+        if statistical_context:
+            test_results_path = statistical_context.get('test_results_path', '')
+            test_results = statistical_context.get('test_results', '')
+
+            if test_results_path:
+                context_info += f"""
+Statistical Test Validation Context:
+- Test Results File: {test_results_path}
+- Test Type: {statistical_context.get('test_type', 'Not specified')}
+- Hypothesis: {statistical_context.get('hypothesis', 'Not specified')}
+"""
+            elif test_results:
+                test_preview = test_results[:200] + "..." if len(test_results) > 200 else test_results
+                context_info += f"""
+Statistical Test Validation Context:
+- Test Results Length: {len(test_results)} characters
+- Test Type: {statistical_context.get('test_type', 'Not specified')}
+- Test Preview: {test_preview}
 """
 
         messages = [
@@ -259,6 +282,38 @@ Report Validation Context:
         else:
             state["report_validation_result"] = None
 
+        # Delegate to Statistical Validation Agent using A2A protocol
+        statistical_context = state.get("statistical_validation_context")
+        if statistical_context:
+            # Create A2A request for statistical validation
+            statistical_validation_request = self.a2a_handler.create_request(
+                receiver="statistical_validation_agent",
+                task="Validate statistical tests and analysis for A/B testing",
+                data={
+                    "test_results_path": statistical_context.get("test_results_path", ""),
+                    "test_results": statistical_context.get("test_results", ""),
+                    "dataset_path": statistical_context.get("dataset_path", ""),
+                    "test_type": statistical_context.get("test_type", ""),
+                    "hypothesis": statistical_context.get("hypothesis", ""),
+                    "significance_level": statistical_context.get("significance_level", 0.05)
+                },
+                metadata={"orchestrator_step": "delegation"}
+            )
+
+            # Store request
+            state["a2a_messages"].append(self.a2a_handler.serialize_message(statistical_validation_request))
+
+            # Process request with statistical validation agent
+            statistical_validation_response = self.statistical_validation_agent.process_request(statistical_validation_request)
+
+            # Store response
+            state["a2a_messages"].append(self.a2a_handler.serialize_message(statistical_validation_response))
+
+            # Extract result
+            state["statistical_validation_result"] = statistical_validation_response.result
+        else:
+            state["statistical_validation_result"] = None
+
         # Placeholder for additional sub-agent (to be implemented)
         state["sub_agent_2_result"] = {
             "agent": "sub_agent_2",
@@ -283,6 +338,7 @@ Report Validation Context:
         data_validation = state.get("data_validation_result")
         code_validation = state.get("code_validation_result")
         report_validation = state.get("report_validation_result")
+        statistical_validation = state.get("statistical_validation_result")
         sub_agent_2 = state.get("sub_agent_2_result", {})
 
         # Build synthesis prompt based on which agents were used
@@ -300,7 +356,11 @@ Report Validation Context:
             report_val_summary = self._format_report_validation_summary(report_validation)
             results_summary += f"\nReport Validation Agent Results:\n{report_val_summary}\n"
 
-        if not data_validation and not code_validation and not report_validation:
+        if statistical_validation:
+            statistical_val_summary = self._format_statistical_validation_summary(statistical_validation)
+            results_summary += f"\nStatistical Validation Agent Results:\n{statistical_val_summary}\n"
+
+        if not data_validation and not code_validation and not report_validation and not statistical_validation:
             results_summary = "No validation results available."
 
         # Use LLM to synthesize results
@@ -423,12 +483,40 @@ Report Validation Context:
 
         return summary
 
+    def _format_statistical_validation_summary(self, result: dict) -> str:
+        """Format statistical validation results for synthesis."""
+        if not result or "error" in result:
+            return f"Error: {result.get('error', 'Unknown error')}"
+
+        overall_status = result.get("overall_status", "unknown")
+        overall_score = result.get("overall_score", 0)
+
+        summary = f"Overall Status: {overall_status.upper()}\n"
+        summary += f"Overall Score: {overall_score}/10\n\n"
+
+        summary += f"Scores:\n"
+        summary += f"  - Test Selection: {result.get('test_selection_score', 0)}/10\n"
+        summary += f"  - Assumptions: {result.get('assumptions_score', 0)}/10\n"
+        summary += f"  - Power Analysis: {result.get('power_analysis_score', 0)}/10\n"
+        summary += f"  - Effect Size: {result.get('effect_size_score', 0)}/10\n"
+        summary += f"  - P-Value Interpretation: {result.get('pvalue_score', 0)}/10\n"
+        summary += f"  - Confidence Intervals: {result.get('confidence_interval_score', 0)}/10\n\n"
+
+        feedback = result.get("feedback", {})
+        if feedback:
+            summary += "Feedback:\n"
+            for category, fb in feedback.items():
+                summary += f"  - {category.replace('_', ' ').title()}: {fb[:150]}...\n"
+
+        return summary
+
     def validate(
         self,
         task: str,
         ab_test_context: Optional[ABTestContext] = None,
         code_validation_context: Optional[CodeValidationContext] = None,
-        report_validation_context: Optional[ReportValidationContext] = None
+        report_validation_context: Optional[ReportValidationContext] = None,
+        statistical_validation_context: Optional[StatisticalValidationContext] = None
     ) -> dict:
         """
         Execute the validation workflow for a given task.
@@ -438,6 +526,7 @@ Report Validation Context:
             ab_test_context: Optional A/B testing context with hypothesis, metrics, and dataset
             code_validation_context: Optional Python code validation context
             report_validation_context: Optional A/B testing report validation context
+            statistical_validation_context: Optional statistical test validation context
 
         Returns:
             Dictionary containing validation results
@@ -448,11 +537,13 @@ Report Validation Context:
             ab_test_context=ab_test_context,
             code_validation_context=code_validation_context,
             report_validation_context=report_validation_context,
+            statistical_validation_context=statistical_validation_context,
             messages=[],
             a2a_messages=[],
             data_validation_result=None,
             code_validation_result=None,
             report_validation_result=None,
+            statistical_validation_result=None,
             sub_agent_2_result=None,
             current_step="start",
             next_action="entry",
@@ -472,6 +563,7 @@ Report Validation Context:
             "data_validation": final_state.get("data_validation_result"),
             "code_validation": final_state.get("code_validation_result"),
             "report_validation": final_state.get("report_validation_result"),
+            "statistical_validation": final_state.get("statistical_validation_result"),
             "sub_agent_2": final_state["sub_agent_2_result"],
             "a2a_messages": final_state["a2a_messages"]
         }

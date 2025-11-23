@@ -36,6 +36,18 @@ class ReportValidationContext(TypedDict):
     report_type: Optional[str]  # Type of report (default: "ab_test")
 
 
+class StatisticalValidationContext(TypedDict):
+    """
+    Context information for statistical test validation.
+    """
+    test_results_path: Optional[str]  # Path to statistical test results file
+    test_results: Optional[str]  # Statistical test results content (if not using path)
+    dataset_path: Optional[str]  # Path to the dataset used in the test
+    test_type: Optional[str]  # Type of statistical test (e.g., "t-test", "chi-square", "anova")
+    hypothesis: Optional[str]  # The hypothesis being tested
+    significance_level: Optional[float]  # Alpha level (default: 0.05)
+
+
 class ValidationState(TypedDict):
     """
     State schema for the validation workflow.
@@ -55,6 +67,9 @@ class ValidationState(TypedDict):
     # Report validation specific context
     report_validation_context: Optional["ReportValidationContext"]  # A/B testing report validation context
 
+    # Statistical test validation specific context
+    statistical_validation_context: Optional["StatisticalValidationContext"]  # Statistical test validation context
+
     # Message history for LLM interactions
     messages: Annotated[List[BaseMessage], add_messages]
 
@@ -65,6 +80,7 @@ class ValidationState(TypedDict):
     data_validation_result: Optional[dict]  # Results from data validation agent
     code_validation_result: Optional[dict]  # Results from code validation agent
     report_validation_result: Optional[dict]  # Results from report validation agent
+    statistical_validation_result: Optional[dict]  # Results from statistical validation agent
     sub_agent_2_result: Optional[dict]  # Results from second validation agent
 
     # Orchestrator decisions

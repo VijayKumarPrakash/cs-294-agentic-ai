@@ -1,0 +1,22 @@
+A/B Test Results
+================
+
+We tested if the new button color improves clicks.
+
+Data:
+Group A (red button): 45 users, 23 clicks
+Group B (blue button): 42 users, 28 clicks
+
+Test: We used a chi-square test.
+
+Results: p-value = 0.048
+
+Conclusion: It's significant! The blue button is better.
+
+We should change all buttons to blue immediately.
+
+Additional notes:
+- We stopped the test early when we saw the p-value was close to 0.05
+- We also tested button size and position but those weren't significant
+- Some users saw both versions due to a tracking issue but we kept the data anyway
+- The blue button was only shown during peak hours (9am-5pm) while red button was shown 24/7
